@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/nvidia-image-api/:match*",
+      "destination": "https://ai.api.nvidia.com/:match*"
+    },
+    {
+      "source": "/nvidia-chat-api/:match*",
+      "destination": "https://integrate.api.nvidia.com/:match*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
