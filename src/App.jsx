@@ -75,10 +75,61 @@ function App() {
 
   // Global hotkey: Shift + D to download all images
   useEffect(() => {
-    const handleKeyDown = (e) => {
+    const handleKeyDown = async (e) => {
       if (e.shiftKey && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        images.forEach(img => downloadImage(img.url, img.prompt));
+        
+        if (images.length === 0) return;
+
+        try {
+          // Request user to select a directory
+          const dirHandle = await window.showDirectoryPicker({
+            mode: 'readwrite',
+            startIn: 'downloads'
+          });
+
+          for (const img of images) {
+            // Determine filename
+            const filenameMatch = img.prompt.match(/\(filename:\s*([^)]+)\)/i);
+            let finalName = '';
+            
+            if (filenameMatch && filenameMatch[1]) {
+              // Extract original extension or append .jpg
+              const rawName = filenameMatch[1].trim();
+              if (rawName.toLowerCase().endsWith('.jpg') || rawName.toLowerCase().endsWith('.png') || rawName.toLowerCase().endsWith('.webp')) {
+                finalName = rawName.replace(/[^a-z0-9_.-]/gi, '_');
+              } else {
+                finalName = rawName.replace(/[^a-z0-9_-]/gi, '_') + '.jpg';
+              }
+            } else {
+              const safeName = img.prompt.replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'image';
+              finalName = `flux_${safeName}.jpg`;
+            }
+
+            // Convert base64 data URL to Blob
+            const base64Data = img.url.split(',')[1];
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'image/jpeg' });
+
+            // Create file and write blob
+            const fileHandle = await dirHandle.getFileHandle(finalName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+          }
+          
+          alert(`Successfully saved ${images.length} images to the selected folder!`);
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            console.error('Directory picking or file writing failed:', err);
+            alert('Failed to save images. Ensure you granted folder permissions.');
+          }
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -111,6 +162,24 @@ function App() {
         promptsToGenerate = [currentPrompt.trim()];
       }
     }
+
+    // Expand prompts based on `--n X` flag
+    let expandedPrompts = [];
+    for (let p of promptsToGenerate) {
+      const countMatch = p.match(/--n\s+(\d+)/i);
+      if (countMatch) {
+        const count = Math.min(parseInt(countMatch[1], 10), 100); // cap at 100
+        const cleanP = p.replace(countMatch[0], '').trim();
+        for (let i = 0; i < count; i++) {
+          // If duplicating, append a hidden random seed string so they aren't identical string keys if needed
+          // But our map index handles seeds anyway, so just duplicating the prompt text is fine.
+          expandedPrompts.push(cleanP);
+        }
+      } else {
+        expandedPrompts.push(p);
+      }
+    }
+    promptsToGenerate = expandedPrompts;
 
     setGeneratingCount(promptsToGenerate.length);
 
@@ -153,32 +222,42 @@ function App() {
           cleanPrompt = cleanPrompt.replace(filenameMatch[0], '').replace(/\s{2,}/g, ' ').trim();
         }
 
-        const response = await fetch("/nvidia-image-api/v1/genai/black-forest-labs/flux.1-dev", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-          },
-          body: JSON.stringify({
-            prompt: cleanPrompt,
-            width: width,
-            height: height,
-            // Add index to seed to ensure different seeds for identical prompts
-            seed: Math.floor(Math.random() * 1000000) + index,
-            steps: 50
-          })
-        });
+        // Add a slight stagger to avoid instant rate limiting
+        await new Promise(resolve => setTimeout(resolve, index * 800));
 
-        if (!response.ok) throw new Error("Failed");
+        try {
+          const response = await fetch("/nvidia-image-api/v1/genai/black-forest-labs/flux.1-dev", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "Accept": "application/json"
+            },
+            body: JSON.stringify({
+              prompt: cleanPrompt,
+              width: width,
+              height: height,
+              // Add index to seed to ensure different seeds for identical prompts
+              seed: Math.floor(Math.random() * 1000000) + index,
+              steps: 50
+            })
+          });
 
-        const data = await response.json();
-        if (data.artifacts && data.artifacts[0] && data.artifacts[0].base64) {
-          return {
-            id: Date.now() + Math.random(),
-            url: `data:image/jpeg;base64,${data.artifacts[0].base64}`,
-            prompt: singlePrompt
-          };
+          if (!response.ok) {
+            console.error(`Request failed with status ${response.status}`);
+            return null;
+          }
+
+          const data = await response.json();
+          if (data.artifacts && data.artifacts[0] && data.artifacts[0].base64) {
+            return {
+              id: Date.now() + Math.random(),
+              url: `data:image/jpeg;base64,${data.artifacts[0].base64}`,
+              prompt: singlePrompt
+            };
+          }
+        } catch (e) {
+          console.error("Fetch error for prompt:", cleanPrompt, e);
         }
         return null;
       });
@@ -209,7 +288,9 @@ function App() {
           
           {/* Left: Brand */}
           <div className="flex items-center gap-3">
-            <img src="https://res.cloudinary.com/dmdrn1bge/image/upload/v1778683419/flux_Minimal_futuristic_logo_design_joq3vp.jpg" alt="VisionFriday" className="w-8 h-8 rounded-lg object-cover shadow-sm border border-white/10" />
+            <div className="w-8 h-8 rounded-lg overflow-hidden shadow-sm border border-white/10 flex items-center justify-center shrink-0 bg-[#141414]">
+              <img src="https://res.cloudinary.com/dmdrn1bge/image/upload/v1778683419/flux_Minimal_futuristic_logo_design_joq3vp.jpg" alt="VisionFriday" className="w-full h-full object-cover scale-[1.35]" />
+            </div>
             <span className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent tracking-tight">VisionFriday</span>
           </div>
 
